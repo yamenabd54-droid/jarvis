@@ -121,11 +121,18 @@ async function ask(q){
   $('you').textContent='› '+q;$('src').textContent='';$('line').textContent=LANG[lang].think;setState('think');
   history.push({role:'user',parts:[{text:q}]});history=history.slice(-16);
   try{
-    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',{method:'POST',
-      headers:{'Content-Type':'application/json','x-goog-api-key':key},
-      body:JSON.stringify({system_instruction:{parts:[{text:sys()}]},contents:history,tools:[{google_search:{}}],generationConfig:{temperature:.5,maxOutputTokens:800}})});
-    const j=await r.json();
-    if(!r.ok)throw new Error((j.error&&j.error.message)||r.status);
+    const body=JSON.stringify({system_instruction:{parts:[{text:sys()}]},contents:history,tools:[{google_search:{}}],generationConfig:{temperature:.5,maxOutputTokens:1200}});
+    const models=[store.get('model'),'gemini-3.8-flash','gemini-flash-latest','gemini-3.5-flash'].filter((m,i,a)=>m&&a.indexOf(m)===i);
+    let r,j,lastErr='';
+    for(const m of models){
+      r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body});
+      j=await r.json().catch(()=>({}));
+      if(r.ok){store.set('model',m);break}
+      lastErr=(j.error&&j.error.message)||String(r.status);
+      if(r.status===400&&/api key/i.test(lastErr))break;
+      if(r.status===429)break;
+    }
+    if(!r.ok)throw new Error(r.status===429?'وصلت للحد المجاني لهلق. جرّب بعد شوي.':lastErr);
     const c=(j.candidates||[])[0]||{};const text=((c.content&&c.content.parts)||[]).map(p=>p.text||'').join('').trim()||'…';
     history.push({role:'model',parts:[{text}]});
     $('line').textContent=text;
