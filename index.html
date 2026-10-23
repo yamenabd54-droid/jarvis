@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#03070C">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>J.A.R.V.I.S.</title>
+<style>
+:root{--bg:#03070C;--line:#0E3A52;--glow:#3FD8FF;--dim:#1C7FA3;--ink:#D7F4FF;--muted:#6C93A6;--warn:#FFB547;--ok:#4BF0A8;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",Roboto,Tahoma,sans-serif;overflow:hidden}
+body{background:radial-gradient(ellipse at 50% 35%,rgba(63,216,255,.12),transparent 60%),var(--bg)}
+.top{position:fixed;top:0;left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;font-size:.7rem;letter-spacing:.3em;color:var(--glow);font-family:monospace;z-index:5}
+.top button{background:none;border:1px solid var(--line);color:var(--dim);font:inherit;letter-spacing:.1em;padding:4px 10px;border-radius:3px}
+.state i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--glow);box-shadow:0 0 10px var(--glow);margin-right:6px;vertical-align:middle}
+.state.listen i{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+main{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:calc(48px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom))}
+#orb{width:min(78vw,46vh);aspect-ratio:1;flex:none;margin-top:2vh}
+.say{width:100%;max-width:560px;text-align:center;flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0}
+.you{font-family:monospace;font-size:.8rem;color:var(--dim);margin-bottom:6px;unicode-bidi:plaintext}
+.line{font-size:1.1rem;font-weight:600;line-height:1.6;unicode-bidi:plaintext;overflow:auto;max-height:26vh}
+.src{font-size:.75rem;color:var(--muted);margin-top:6px}.src a{color:var(--dim)}
+.mic{width:76px;height:76px;border-radius:50%;border:2px solid var(--glow);background:rgba(7,18,28,.9);color:var(--glow);font-size:1.9rem;box-shadow:0 0 22px rgba(63,216,255,.4);flex:none}
+.mic.on{background:var(--glow);color:var(--bg)}
+.row{display:flex;gap:8px;width:100%;max-width:560px;margin-top:12px}
+.row input{flex:1;min-width:0;font:inherit;background:rgba(7,18,28,.9);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:10px;unicode-bidi:plaintext}
+.row button,.row select{background:rgba(7,18,28,.9);color:var(--glow);border:1px solid var(--dim);border-radius:4px;padding:8px 10px;font:inherit;font-size:.85rem}
+dialog{background:#07121C;color:var(--ink);border:1px solid var(--dim);border-radius:6px;width:min(94vw,520px)}
+dialog label{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
+dialog input,dialog textarea{width:100%;font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:8px}
+dialog textarea{height:34vh}
+dialog .btns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+dialog button{background:var(--glow);color:var(--bg);border:0;border-radius:4px;padding:8px 16px;font-weight:600}
+dialog button.ghost{background:none;color:var(--muted);border:1px solid var(--line)}
+dialog a{color:var(--glow)}
+</style>
+</head>
+<body>
+<div class="top"><span>J.A.R.V.I.S.</span><span class="state" id="state"><i></i>ONLINE</span><button id="gear">⚙</button></div>
+<main>
+  <canvas id="orb"></canvas>
+  <div class="say" aria-live="polite"><div class="you" id="you"></div><div class="line" id="line">…</div><div class="src" id="src"></div></div>
+  <button class="mic" id="mic" aria-label="احكي">🎙</button>
+  <form class="row" id="form">
+    <input id="input" placeholder="اكتب سؤالك…" autocomplete="off">
+    <select id="lang"><option value="ar">ع</option><option value="de">DE</option><option value="en">EN</option></select>
+    <button>➤</button>
+  </form>
+</main>
+
+<dialog id="settings">
+  <h3 style="margin:0">الإعدادات</h3>
+  <label for="key">مفتاح Gemini (مجاني من <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)</label>
+  <input id="key" type="password" placeholder="AIza…" autocomplete="off">
+  <label for="profile">معلومات عنك (بتضل بس على جوالك)</label>
+  <textarea id="profile" placeholder="الصق هون محتوى profile.md"></textarea>
+  <div class="btns"><button class="ghost" id="forget" type="button">محادثة جديدة</button><button id="save" type="button">حفظ</button></div>
+</dialog>
+
+<script>
+(()=>{
+const $=id=>document.getElementById(id);
+const store={get:k=>{try{return localStorage.getItem(k)||''}catch(e){return ''}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+const LANG={ar:{rec:'ar-JO',tts:/^ar/i,name:'Levantine Arabic (Syrian dialect, Arabic script); keep German official terms in German',hi:'أهلين يامن. كل الأنظمة شغّالة.',think:'لحظة…'},
+            de:{rec:'de-DE',tts:/^de/i,name:'German',hi:'Hallo Yamen. Alle Systeme online.',think:'Moment…'},
+            en:{rec:'en-US',tts:/^en/i,name:'English',hi:'Hello Yamen. All systems online.',think:'One moment…'}};
+let lang=store.get('lang')||'ar';$('lang').value=lang;
+let mode='idle',history=[];
+function setState(m){mode=m;$('state').className='state'+(m==='listen'?' listen':'');$('state').innerHTML='<i></i>'+{idle:'ONLINE',think:'THINKING',speak:'SPEAKING',listen:'LISTENING'}[m]}
+
+/* orb */
+const cv=$('orb'),cx=cv.getContext('2d');let lvl=0;
+const dots=Array.from({length:60},()=>({a:Math.random()*6.28,r:.6+Math.random()*.38,s:(Math.random()*.002+.0006)*(Math.random()<.5?-1:1),z:Math.random()}));
+function size(){const d=Math.min(devicePixelRatio||1,2),w=cv.clientWidth;cv.width=w*d;cv.height=w*d;cx.setTransform(d,0,0,d,0,0)}size();addEventListener('resize',size);
+function arc(R,a,b,w,al){cx.beginPath();cx.arc(0,0,R,a,b);cx.lineWidth=w;cx.strokeStyle='rgba(63,216,255,'+al+')';cx.stroke()}
+function frame(n){const t=n/1000,W=cv.clientWidth,R=W/2;cx.clearRect(0,0,W,W);cx.save();cx.translate(R,R);
+  const tg=mode==='speak'?.5+.5*Math.abs(Math.sin(t*7)*Math.sin(t*2.1)):mode==='listen'?.4+.2*Math.abs(Math.sin(t*4)):mode==='think'?.3:.08;lvl+=(tg-lvl)*.12;
+  const p=1+lvl*.12,sp=mode==='think'?2.6:mode==='idle'?1:1.5;
+  const g=cx.createRadialGradient(0,0,0,0,0,R*.38*p);g.addColorStop(0,'rgba(230,252,255,1)');g.addColorStop(.16,'rgba(120,232,255,.9)');g.addColorStop(.55,'rgba(30,140,190,.28)');g.addColorStop(1,'rgba(3,7,12,0)');
+  cx.fillStyle=g;cx.beginPath();cx.arc(0,0,R*.38*p,0,6.28);cx.fill();cx.shadowColor='rgba(63,216,255,.9)';cx.shadowBlur=14;arc(R*.3*p,0,6.28,4,.95);
+  cx.save();cx.rotate(t*.9*sp);arc(R*.23,.3,1.7,2.5,.85);arc(R*.23,3.4,4.7,2.5,.85);cx.restore();cx.shadowBlur=0;
+  cx.save();cx.rotate(-t*.25*sp);for(let i=0;i<90;i++){const a=i/90*6.28,l=(i%9===0?.07:.04)*(1+lvl*.6);cx.beginPath();cx.moveTo(Math.cos(a)*R*.4,Math.sin(a)*R*.4);cx.lineTo(Math.cos(a)*R*(.4+l),Math.sin(a)*R*(.4+l));cx.lineWidth=2;cx.strokeStyle='rgba(63,216,255,'+(i%9===0?.85:.45)+')';cx.stroke()}cx.restore();
+  cx.save();cx.rotate(t*.12*sp);[[.2,1.3],[1.7,2.6],[3.3,4.4],[4.9,5.9]].forEach(([a,b])=>arc(R*.66,a,b,3,.8));cx.restore();
+  cx.save();cx.rotate(-t*.07*sp);[[.6,2.2],[3.6,5.4]].forEach(([a,b])=>arc(R*.78,a,b,2,.5));cx.restore();
+  dots.forEach(d=>{d.a+=d.s*sp;cx.fillStyle='rgba(120,230,255,'+(.25+.5*d.z)+')';cx.fillRect(Math.cos(d.a)*R*d.r,Math.sin(d.a)*R*d.r,1.6,1.6)});
+  cx.restore();requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+
+/* voice out */
+const synth=window.speechSynthesis;
+function speak(text){if(!synth){setState('idle');return}synth.cancel();
+  const vs=synth.getVoices().filter(v=>LANG[lang].tts.test(v.lang));const v=vs.find(x=>/natural|online|neural/i.test(x.name))||vs[0];
+  const parts=(text.replace(/\s+/g,' ').match(/[^.!?؟]+[.!?؟]?/g)||[text]).map(s=>s.trim()).filter(Boolean);
+  setState('speak');parts.forEach((s,i)=>{const u=new SpeechSynthesisUtterance(s);u.lang=v?v.lang:LANG[lang].rec;if(v)u.voice=v;if(i===parts.length-1)u.onend=u.onerror=()=>setState('idle');synth.speak(u)})}
+if(synth)synth.onvoiceschanged=()=>{};
+
+/* voice in */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
+$('mic').onclick=()=>{
+  if(rec){rec.stop();return}
+  if(!SR){$('line').textContent='هالمتصفح ما بيدعم المايك. افتح التطبيق بـ Chrome.';return}
+  synth&&synth.cancel();rec=new SR();rec.lang=LANG[lang].rec;rec.interimResults=true;let fin='';
+  setState('listen');$('mic').classList.add('on');
+  rec.onresult=e=>{let s='';for(const r of e.results){s+=r[0].transcript;if(r.isFinal)fin=s}$('you').textContent='› '+s};
+  rec.onerror=e=>{if(e.error==='not-allowed')$('line').textContent='اسمح للمايك من إعدادات Chrome للموقع.'};
+  rec.onend=()=>{rec=null;$('mic').classList.remove('on');if(mode==='listen')setState('idle');const q=(fin||'').trim();if(q)ask(q)};
+  rec.start();
+};
+
+/* brain: Gemini (free tier) + Google Search */
+function sys(){return 'You are J.A.R.V.I.S., the personal voice assistant of Yamen. Now: '+new Date().toString()+' (he lives in Stuttgart, Germany).\n'+
+ 'Answer in '+LANG[lang].name+'. Spoken style: 1-5 short sentences, no markdown, no lists, no emojis, no URLs.\n'+
+ 'Be a practical, honest coach/coworker: concrete numbers, one clear next step. Use Google Search for anything current (news, prices, opening hours, rules). Never invent facts.\n'+
+ 'You cannot send emails or do actions; you only answer and advise.\n\nABOUT YAMEN:\n'+(store.get('profile')||'(no profile saved yet)')}
+async function ask(q){
+  q=q.trim();if(!q)return;const key=store.get('key');
+  if(!key){$('settings').showModal();return}
+  $('you').textContent='› '+q;$('src').textContent='';$('line').textContent=LANG[lang].think;setState('think');
+  history.push({role:'user',parts:[{text:q}]});history=history.slice(-16);
+  try{
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',{method:'POST',
+      headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({system_instruction:{parts:[{text:sys()}]},contents:history,tools:[{google_search:{}}],generationConfig:{temperature:.5,maxOutputTokens:800}})});
+    const j=await r.json();
+    if(!r.ok)throw new Error((j.error&&j.error.message)||r.status);
+    const c=(j.candidates||[])[0]||{};const text=((c.content&&c.content.parts)||[]).map(p=>p.text||'').join('').trim()||'…';
+    history.push({role:'model',parts:[{text}]});
+    $('line').textContent=text;
+    const ch=((c.groundingMetadata||{}).groundingChunks||[]).map(x=>x.web).filter(Boolean).slice(0,3);
+    $('src').innerHTML=ch.map(w=>'<a href="'+w.uri+'" target="_blank" rel="noopener">'+(w.title||'source')+'</a>').join(' · ');
+    speak(text);
+  }catch(e){history.pop();setState('idle');$('line').textContent='صار خطأ: '+e.message}
+}
+
+/* ui */
+$('form').onsubmit=e=>{e.preventDefault();const v=$('input').value;$('input').value='';$('input').blur();ask(v)};
+$('lang').onchange=()=>{lang=$('lang').value;store.set('lang',lang);$('line').textContent=LANG[lang].hi};
+$('gear').onclick=()=>{$('key').value=store.get('key');$('profile').value=store.get('profile');$('settings').showModal()};
+$('save').onclick=()=>{store.set('key',$('key').value.trim());store.set('profile',$('profile').value);$('settings').close();$('line').textContent=LANG[lang].hi};
+$('forget').onclick=()=>{history=[];$('settings').close();$('you').textContent='';$('src').textContent='';$('line').textContent=LANG[lang].hi};
+$('line').textContent=store.get('key')?LANG[lang].hi:'أهلين يامن. اكبس ⚙ وحط مفتاح Gemini المجاني لنبلّش.';
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+})();
+</script>
+</body>
+</html>
