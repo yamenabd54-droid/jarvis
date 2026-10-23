@@ -53,7 +53,14 @@ dialog a{color:var(--glow)}
 
 <dialog id="settings">
   <h3 style="margin:0">الإعدادات</h3>
-  <label for="key">مفتاح Gemini (مجاني من <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)</label>
+  <label for="brain">الدماغ</label>
+  <select id="brain" style="width:100%;font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:8px">
+    <option value="claude">Claude (أذكى، مدفوع حسب الاستعمال)</option>
+    <option value="gemini">Gemini (مجاني بحدود)</option>
+  </select>
+  <label for="ckey">مفتاح Claude API (من <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>)</label>
+  <input id="ckey" type="password" placeholder="sk-ant-…" autocomplete="off">
+  <label for="key">مفتاح Gemini (من <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)</label>
   <input id="key" type="password" placeholder="AIza…" autocomplete="off">
   <label for="profile">معلومات عنك (بتضل بس على جوالك)</label>
   <textarea id="profile" placeholder="الصق هون محتوى profile.md"></textarea>
@@ -110,47 +117,74 @@ $('mic').onclick=()=>{
   rec.start();
 };
 
-/* brain: Gemini (free tier) + Google Search */
+/* brain: Claude (paid) or Gemini (free tier), both with web search */
 function sys(){return 'You are J.A.R.V.I.S., the personal voice assistant of Yamen. Now: '+new Date().toString()+' (he lives in Stuttgart, Germany).\n'+
  'Answer in '+LANG[lang].name+'. Spoken style: 1-5 short sentences, no markdown, no lists, no emojis, no URLs.\n'+
- 'Be a practical, honest coach/coworker: concrete numbers, one clear next step. Use Google Search for anything current (news, prices, opening hours, rules). Never invent facts.\n'+
+ 'Be a practical, honest coach/coworker: concrete numbers, one clear next step. Search the web for anything current (news, prices, opening hours, rules); search like a human, compare sources. Never invent facts.\n'+
  'You cannot send emails or do actions; you only answer and advise.\n\nABOUT YAMEN:\n'+(store.get('profile')||'(no profile saved yet)')}
-async function ask(q){
-  q=q.trim();if(!q)return;const key=store.get('key');
-  if(!key){$('settings').showModal();return}
-  $('you').textContent='› '+q;$('src').textContent='';$('line').textContent=LANG[lang].think;setState('think');
-  history.push({role:'user',parts:[{text:q}]});history=history.slice(-16);
-  try{
-    const mk=search=>JSON.stringify({system_instruction:{parts:[{text:sys()}]},contents:history,...(search?{tools:[{google_search:{}}]}:{}),generationConfig:{temperature:.5,maxOutputTokens:1200}});
-    const models=[store.get('model'),'gemini-3.8-flash','gemini-flash-latest','gemini-3.5-flash','gemini-flash-lite-latest','gemini-3.5-flash-lite'].filter((m,i,a)=>m&&a.indexOf(m)===i);
-    let r={ok:false,status:0},j={},lastErr='',quota=0;
-    outer: for(const search of [true,false]){
-      for(const m of models){
-        r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:mk(search)});
-        j=await r.json().catch(()=>({}));
-        if(r.ok){store.set('model',m);break outer}
-        lastErr=(j.error&&j.error.message)||String(r.status);
-        if(r.status===429)quota++;
-        if((r.status===400||r.status===403)&&/api key|permission/i.test(lastErr))break outer;
-      }
+const brain=()=>store.get('brain')||(store.get('ckey')?'claude':'gemini');
+
+async function askClaude(){
+  const key=store.get('ckey');if(!key)throw new Error('حط مفتاح Claude بالإعدادات ⚙');
+  const msgs=history.map(h=>({role:h.role,content:h.text}));
+  const tools=[{type:'web_search_20250305',name:'web_search',max_uses:5,user_location:{type:'approximate',city:'Stuttgart',country:'DE',timezone:'Europe/Berlin'}}];
+  let convo=msgs.slice(),text='',sources=[];
+  for(let i=0;i<4;i++){
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:store.get('cmodel')||'claude-sonnet-5-5',max_tokens:1200,system:sys(),messages:convo,tools})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){const m=(j.error&&j.error.message)||String(r.status);
+      throw new Error(r.status===401?'مفتاح Claude غلط.':/credit|balance|billing/i.test(m)?'ما في رصيد بحساب Claude API. اشحن من console.anthropic.com ← Billing.':r.status===429?'كتير طلبات. استنى شوي.':m)}
+    (j.content||[]).forEach(b=>{if(b.type==='text'){text+=b.text;(b.citations||[]).forEach(c=>{if(c.url&&!sources.some(x=>x.uri===c.url))sources.push({uri:c.url,title:c.title})})}});
+    if(j.stop_reason==='pause_turn'){convo=convo.concat([{role:'assistant',content:j.content}]);continue}
+    break;
+  }
+  return {text:text.trim()||'…',sources};
+}
+
+async function askGemini(){
+  const key=store.get('key');if(!key)throw new Error('حط مفتاح Gemini بالإعدادات ⚙');
+  const contents=history.map(h=>({role:h.role==='assistant'?'model':'user',parts:[{text:h.text}]}));
+  const mk=search=>JSON.stringify({system_instruction:{parts:[{text:sys()}]},contents,...(search?{tools:[{google_search:{}}]}:{}),generationConfig:{temperature:.5,maxOutputTokens:1200}});
+  const models=[store.get('model'),'gemini-3.8-flash','gemini-flash-latest','gemini-3.5-flash','gemini-flash-lite-latest','gemini-3.5-flash-lite'].filter((m,i,a)=>m&&a.indexOf(m)===i);
+  let r={ok:false,status:0},j={},lastErr='',quota=0;
+  outer: for(const search of [true,false]){
+    for(const m of models){
+      r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:mk(search)});
+      j=await r.json().catch(()=>({}));
+      if(r.ok){store.set('model',m);break outer}
+      lastErr=(j.error&&j.error.message)||String(r.status);
+      if(r.status===429)quota++;
+      if((r.status===400||r.status===403)&&/api key|permission/i.test(lastErr))break outer;
     }
-    if(!r.ok)throw new Error(quota?'وصلت للحد المجاني لهلق. جرّب بعد شوي (أو بكرا).':lastErr);
-    const c=(j.candidates||[])[0]||{};const text=((c.content&&c.content.parts)||[]).map(p=>p.text||'').join('').trim()||'…';
-    history.push({role:'model',parts:[{text}]});
-    $('line').textContent=text;
-    const ch=((c.groundingMetadata||{}).groundingChunks||[]).map(x=>x.web).filter(Boolean).slice(0,3);
-    $('src').innerHTML=ch.map(w=>'<a href="'+w.uri+'" target="_blank" rel="noopener">'+(w.title||'source')+'</a>').join(' · ');
-    speak(text);
+  }
+  if(!r.ok)throw new Error(quota?'وصلت للحد المجاني لهلق. جرّب بعد شوي (أو بكرا).':lastErr);
+  const c=(j.candidates||[])[0]||{};
+  return {text:((c.content&&c.content.parts)||[]).map(p=>p.text||'').join('').trim()||'…',
+          sources:((c.groundingMetadata||{}).groundingChunks||[]).map(x=>x.web).filter(Boolean)};
+}
+
+async function ask(q){
+  q=q.trim();if(!q)return;
+  if(!store.get('key')&&!store.get('ckey')){$('settings').showModal();return}
+  $('you').textContent='› '+q;$('src').textContent='';$('line').textContent=LANG[lang].think;setState('think');
+  history.push({role:'user',text:q});history=history.slice(-16);if(history[0].role!=='user')history.shift();
+  try{
+    const res=brain()==='claude'?await askClaude():await askGemini();
+    history.push({role:'assistant',text:res.text});
+    $('line').textContent=res.text;
+    $('src').innerHTML=res.sources.slice(0,3).map(w=>'<a href="'+w.uri+'" target="_blank" rel="noopener">'+(w.title||'source').replace(/</g,'&lt;')+'</a>').join(' · ');
+    speak(res.text);
   }catch(e){history.pop();setState('idle');$('line').textContent='صار خطأ: '+e.message}
 }
 
 /* ui */
 $('form').onsubmit=e=>{e.preventDefault();const v=$('input').value;$('input').value='';$('input').blur();ask(v)};
 $('lang').onchange=()=>{lang=$('lang').value;store.set('lang',lang);$('line').textContent=LANG[lang].hi};
-$('gear').onclick=()=>{$('key').value=store.get('key');$('profile').value=store.get('profile');$('settings').showModal()};
-$('save').onclick=()=>{store.set('key',$('key').value.trim());store.set('profile',$('profile').value);$('settings').close();$('line').textContent=LANG[lang].hi};
+$('gear').onclick=()=>{$('brain').value=brain();$('ckey').value=store.get('ckey');$('key').value=store.get('key');$('profile').value=store.get('profile');$('settings').showModal()};
+$('save').onclick=()=>{store.set('brain',$('brain').value);store.set('ckey',$('ckey').value.trim());store.set('key',$('key').value.trim());store.set('profile',$('profile').value);history=[];$('settings').close();$('line').textContent=LANG[lang].hi};
 $('forget').onclick=()=>{history=[];$('settings').close();$('you').textContent='';$('src').textContent='';$('line').textContent=LANG[lang].hi};
-$('line').textContent=store.get('key')?LANG[lang].hi:'أهلين يامن. اكبس ⚙ وحط مفتاح Gemini المجاني لنبلّش.';
+$('line').textContent=(store.get('key')||store.get('ckey'))?LANG[lang].hi:'أهلين يامن. اكبس ⚙ وحط مفتاح لنبلّش.';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 })();
 </script>
