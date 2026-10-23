@@ -55,13 +55,14 @@ dialog a{color:var(--glow)}
   <h3 style="margin:0">الإعدادات</h3>
   <label for="brain">الدماغ</label>
   <select id="brain" style="width:100%;font:inherit;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:8px">
-    <option value="claude">Claude (أذكى، مدفوع حسب الاستعمال)</option>
-    <option value="gemini">Gemini (مجاني بحدود)</option>
+    <option value="gemini">Gemini (مجاني، أو مدفوع إذا فعّلت الدفع بنفس المفتاح)</option>
+    <option value="claude">Claude (مدفوع حسب الاستعمال)</option>
   </select>
   <label for="ckey">مفتاح Claude API (من <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>)</label>
   <input id="ckey" type="password" placeholder="sk-ant-…" autocomplete="off">
   <label for="key">مفتاح Gemini (من <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>)</label>
   <input id="key" type="password" placeholder="AIza…" autocomplete="off">
+  <label style="display:flex;gap:8px;align-items:center"><input id="gvoice" type="checkbox" style="width:auto"> صوت طبيعي من Gemini (بيحتاج Gemini مدفوع)</label>
   <label for="profile">معلومات عنك (بتضل بس على جوالك)</label>
   <textarea id="profile" placeholder="الصق هون محتوى profile.md"></textarea>
   <div class="btns"><button class="ghost" id="forget" type="button">محادثة جديدة</button><button id="save" type="button">حفظ</button></div>
@@ -98,10 +99,36 @@ requestAnimationFrame(frame);
 
 /* voice out */
 const synth=window.speechSynthesis;
-function speak(text){if(!synth){setState('idle');return}synth.cancel();
+function speakDevice(text){if(!synth){setState('idle');return}synth.cancel();
   const vs=synth.getVoices().filter(v=>LANG[lang].tts.test(v.lang));const v=vs.find(x=>/natural|online|neural/i.test(x.name))||vs[0];
   const parts=(text.replace(/\s+/g,' ').match(/[^.!?؟]+[.!?؟]?/g)||[text]).map(s=>s.trim()).filter(Boolean);
   setState('speak');parts.forEach((s,i)=>{const u=new SpeechSynthesisUtterance(s);u.lang=v?v.lang:LANG[lang].rec;if(v)u.voice=v;if(i===parts.length-1)u.onend=u.onerror=()=>setState('idle');synth.speak(u)})}
+let audioEl=null;
+function pcmToWav(b64,rate){const pcm=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));const h=new DataView(new ArrayBuffer(44));
+  const w=(o,str)=>{for(let i=0;i<str.length;i++)h.setUint8(o+i,str.charCodeAt(i))};
+  w(0,'RIFF');h.setUint32(4,36+pcm.length,true);w(8,'WAVE');w(12,'fmt ');h.setUint32(16,16,true);h.setUint16(20,1,true);h.setUint16(22,1,true);
+  h.setUint32(24,rate,true);h.setUint32(28,rate*2,true);h.setUint16(32,2,true);h.setUint16(34,16,true);w(36,'data');h.setUint32(40,pcm.length,true);
+  return new Blob([h.buffer,pcm],{type:'audio/wav'})}
+async function speakGemini(text){
+  const key=store.get('key');if(!key)throw new Error('no key');
+  const models=[store.get('ttsmodel'),'gemini-3.8-flash-tts','gemini-3.1-flash-tts-preview','gemini-2.5-flash-preview-tts'].filter((m,i,a)=>m&&a.indexOf(m)===i);
+  for(const m of models){
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({contents:[{parts:[{text:(lang==='ar'?'Say in a calm, warm Levantine Arabic voice: ':'Say in a calm, confident assistant voice: ')+text}]}],
+        generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:'Charon'}}}}})});
+    if(!r.ok){if(r.status===429)throw new Error('quota');continue}
+    const j=await r.json();const part=(((j.candidates||[])[0]||{}).content||{}).parts||[];const d=part.find(p=>p.inlineData);
+    if(!d)continue;store.set('ttsmodel',m);
+    const rate=+((d.inlineData.mimeType||'').match(/rate=(\d+)/)||[0,24000])[1];
+    if(audioEl){audioEl.pause()}audioEl=new Audio(URL.createObjectURL(pcmToWav(d.inlineData.data,rate)));
+    setState('speak');audioEl.onended=audioEl.onerror=()=>setState('idle');await audioEl.play();return;
+  }
+  throw new Error('no tts model');
+}
+function speak(text){
+  if(store.get('gvoice')==='1'){setState('speak');speakGemini(text).catch(()=>speakDevice(text))}
+  else speakDevice(text);
+}
 if(synth)synth.onvoiceschanged=()=>{};
 
 /* voice in */
@@ -109,7 +136,7 @@ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;let rec=null;
 $('mic').onclick=()=>{
   if(rec){rec.stop();return}
   if(!SR){$('line').textContent='هالمتصفح ما بيدعم المايك. افتح التطبيق بـ Chrome.';return}
-  synth&&synth.cancel();rec=new SR();rec.lang=LANG[lang].rec;rec.interimResults=true;let fin='';
+  synth&&synth.cancel();if(audioEl)audioEl.pause();rec=new SR();rec.lang=LANG[lang].rec;rec.interimResults=true;let fin='';
   setState('listen');$('mic').classList.add('on');
   rec.onresult=e=>{let s='';for(const r of e.results){s+=r[0].transcript;if(r.isFinal)fin=s}$('you').textContent='› '+s};
   rec.onerror=e=>{if(e.error==='not-allowed')$('line').textContent='اسمح للمايك من إعدادات Chrome للموقع.'};
@@ -122,7 +149,7 @@ function sys(){return 'You are J.A.R.V.I.S., the personal voice assistant of Yam
  'Answer in '+LANG[lang].name+'. Spoken style: 1-5 short sentences, no markdown, no lists, no emojis, no URLs.\n'+
  'Be a practical, honest coach/coworker: concrete numbers, one clear next step. Search the web for anything current (news, prices, opening hours, rules); search like a human, compare sources. Never invent facts.\n'+
  'You cannot send emails or do actions; you only answer and advise.\n\nABOUT YAMEN:\n'+(store.get('profile')||'(no profile saved yet)')}
-const brain=()=>store.get('brain')||(store.get('ckey')?'claude':'gemini');
+const brain=()=>store.get('brain')||'gemini';
 
 async function askClaude(){
   const key=store.get('ckey');if(!key)throw new Error('حط مفتاح Claude بالإعدادات ⚙');
@@ -181,8 +208,8 @@ async function ask(q){
 /* ui */
 $('form').onsubmit=e=>{e.preventDefault();const v=$('input').value;$('input').value='';$('input').blur();ask(v)};
 $('lang').onchange=()=>{lang=$('lang').value;store.set('lang',lang);$('line').textContent=LANG[lang].hi};
-$('gear').onclick=()=>{$('brain').value=brain();$('ckey').value=store.get('ckey');$('key').value=store.get('key');$('profile').value=store.get('profile');$('settings').showModal()};
-$('save').onclick=()=>{store.set('brain',$('brain').value);store.set('ckey',$('ckey').value.trim());store.set('key',$('key').value.trim());store.set('profile',$('profile').value);history=[];$('settings').close();$('line').textContent=LANG[lang].hi};
+$('gear').onclick=()=>{$('gvoice').checked=store.get('gvoice')==='1';$('brain').value=brain();$('ckey').value=store.get('ckey');$('key').value=store.get('key');$('profile').value=store.get('profile');$('settings').showModal()};
+$('save').onclick=()=>{store.set('gvoice',$('gvoice').checked?'1':'0');store.set('brain',$('brain').value);store.set('ckey',$('ckey').value.trim());store.set('key',$('key').value.trim());store.set('profile',$('profile').value);history=[];$('settings').close();$('line').textContent=LANG[lang].hi};
 $('forget').onclick=()=>{history=[];$('settings').close();$('you').textContent='';$('src').textContent='';$('line').textContent=LANG[lang].hi};
 $('line').textContent=(store.get('key')||store.get('ckey'))?LANG[lang].hi:'أهلين يامن. اكبس ⚙ وحط مفتاح لنبلّش.';
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
